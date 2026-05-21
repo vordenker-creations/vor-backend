@@ -1,0 +1,28 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: aicareer-db
+    restart: always
+    environment:
+      - POSTGRES_USER=vor
+      - POSTGRES_PASSWORD=coolpassword1234
+      - POSTGRES_DB=aicareer_bridge
+    volumes:
+      - ./storage/pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: .
+    container_name: aicareer-backend
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://vor:coolpassword1234@db:5432/aicareer_bridge
+      - JWT_SECRET_KEY=f7a3b2e19d4c58a06e1d7f23b8c94a5e0d6f1b2c3a4e5d6f7081929a3b4c5d6e
+      - OLLAMA_BASE_URL=http://100.80.253.23:11434
+      - OLLAMA_MODEL=qwen3:14b
+      - OLLAMA_TIMEOUT_SECONDS=300
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
