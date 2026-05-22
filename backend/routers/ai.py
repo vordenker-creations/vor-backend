@@ -126,11 +126,31 @@ async def api_generate_academic_plan(
         )
 
     if context.ai_status == "PENDING":
-        return _response_from_context(
-            current_student.id,
-            context,
-            "Academic plan generation is already running.",
-        )
+        is_stale = False
+        if context.updated_at:
+            now = datetime.now(timezone.utc)
+            if context.updated_at.tzinfo is None:
+                now = now.replace(tzinfo=None)
+            delta = now - context.updated_at
+            if delta.total_seconds() > 10 * 60:  # 10 minutes
+                is_stale = True
+
+        if not is_stale:
+            return _response_from_context(
+                current_student.id,
+                context,
+                "Academic plan generation is already running.",
+            )
+        else:
+            context.ai_last_error = None
+            context.updated_at = datetime.now(timezone.utc)
+            _commit_or_500(db, "restarting stale AI plan generation")
+            background_tasks.add_task(_run_generation_job, current_student.id)
+            return _response_from_context(
+                current_student.id,
+                context,
+                "Previous pending job was stale; generation restarted.",
+            )
 
     context.ai_status = "PENDING"
     context.ai_last_error = None
