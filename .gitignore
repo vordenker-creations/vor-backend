@@ -12,3 +12,6 @@ postgres/
 
 # Version Control
 .git/
+
+lazygit
+lazygit.tar.gz
