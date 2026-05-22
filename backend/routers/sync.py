@@ -90,9 +90,7 @@ def sync_all(
             )
             if existing_c:
                 existing_c.raw_input = raw_input_data
-                existing_c.ai_plan = ai_plan_data
-                existing_c.ai_status = c.ai_status
-                existing_c.ai_last_error = ai_last_error
+                # Do not overwrite existing_c.ai_status, existing_c.ai_plan, or existing_c.ai_last_error from the client during normal profile sync.
                 if c.updated_at:
                     existing_c.updated_at = c.updated_at
             else:
@@ -100,9 +98,9 @@ def sync_all(
                     id=c.id,
                     student_id=current_student.id,
                     raw_input=raw_input_data,
-                    ai_plan=ai_plan_data,
-                    ai_status=c.ai_status,
-                    ai_last_error=ai_last_error,
+                    ai_plan=None,
+                    ai_status="EMPTY",
+                    ai_last_error=None,
                 )
                 if c.updated_at:
                     new_context.updated_at = c.updated_at
