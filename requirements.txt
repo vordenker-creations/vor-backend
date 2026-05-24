@@ -6,6 +6,7 @@ fastapi==0.136.0
 greenlet==3.4.0
 h11==0.16.0
 idna==3.11
+jwt
 numpy==2.4.4
 pgvector==0.4.2
 psycopg2-binary==2.9.11

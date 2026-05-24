@@ -17,12 +17,10 @@ def _parse_json_payload(value):
     return value
 
 
-def _truncate_error(error: str | None) -> str | None:
-    return error[:4000] if error else None
-
-
 def _normalize_username(username: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in username.strip().lower())
+    cleaned = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_" for ch in username.strip().lower()
+    )
     return (cleaned or "student")[:50]
 
 
@@ -58,7 +56,10 @@ def sync_all(
                     .first()
                 )
                 if existing_username:
-                    raise HTTPException(status_code=409, detail=f"Username '{next_username}' is already taken")
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Username '{next_username}' is already taken",
+                    )
                 current_student.username = next_username
             if s.display_name:
                 current_student.display_name = s.display_name
@@ -80,8 +81,6 @@ def sync_all(
                 )
 
             raw_input_data = _parse_json_payload(c.raw_input)
-            ai_plan_data = _parse_json_payload(c.ai_plan) if c.ai_plan else None
-            ai_last_error = _truncate_error(c.ai_last_error)
 
             existing_c = (
                 db.query(models.StudentContext)
