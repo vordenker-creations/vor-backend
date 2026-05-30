@@ -23,7 +23,6 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://100.80.253.23:11434").rst
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:14b")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "4096"))
-
 GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 
 
@@ -86,7 +85,41 @@ Return this exact shape with filled values:
 
 class OllamaError(Exception):
     """Raised when Ollama communication or parsing fails."""
+
     pass
+
+
+def _clamp_int(value: Any, min_value: int, max_value: int, default: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+
+    return max(min_value, min(max_value, value))
+
+
+def _repair_plan_dict(plan_dict: dict[str, Any]) -> dict[str, Any]:
+    metrics = plan_dict.setdefault("metrics", {})
+
+    metrics["academic_progress"] = _clamp_int(
+        metrics.get("academic_progress"), 0, 100, 0
+    )
+    metrics["career_readiness"] = _clamp_int(metrics.get("career_readiness"), 0, 100, 0)
+    metrics["task_load"] = _clamp_int(metrics.get("task_load"), 0, 100, 50)
+
+    for item in plan_dict.get("academic_roadmap", []):
+        if isinstance(item, dict):
+            item["progress_pct"] = _clamp_int(item.get("progress_pct"), 0, 100, 0)
+
+    for day in plan_dict.get("weekly_study_plan", []):
+        if not isinstance(day, dict):
+            continue
+
+        for task in day.get("tasks", []):
+            if isinstance(task, dict):
+                task["duration_min"] = _clamp_int(task.get("duration_min"), 1, 480, 60)
+
+    return plan_dict
 
 
 async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
@@ -102,7 +135,7 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
         "options": {
             "temperature": 0,
             "top_p": 0.8,
-            "repeat_penalty": 1.05,
+            "repeat_penalty": 1.08,
             "num_predict": OLLAMA_NUM_PREDICT,
         },
     }
@@ -113,22 +146,30 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
             response = await client.post(GENERATE_URL, json=payload)
     except httpx.TimeoutException:
         duration = time.perf_counter() - start_time
-        raise OllamaError(f"Ollama timed out after {OLLAMA_TIMEOUT}s (actual duration: {duration:.2f}s).")
+        raise OllamaError(
+            f"Ollama timed out after {OLLAMA_TIMEOUT}s (actual duration: {duration:.2f}s)."
+        )
     except httpx.ConnectError:
-        raise OllamaError(f"Cannot connect to Ollama at {OLLAMA_BASE_URL}. Check Tailscale.")
+        raise OllamaError(
+            f"Cannot connect to Ollama at {OLLAMA_BASE_URL}. Check Tailscale."
+        )
     except httpx.HTTPError as e:
         raise OllamaError(f"HTTP error communicating with Ollama: {e}")
 
     duration = time.perf_counter() - start_time
 
     if response.status_code != 200:
-        raise OllamaError(f"Ollama returned HTTP {response.status_code}: {response.text[:500]} (duration: {duration:.2f}s)")
+        raise OllamaError(
+            f"Ollama returned HTTP {response.status_code}: {response.text[:500]} (duration: {duration:.2f}s)"
+        )
 
     # Extract the generated text from Ollama's response envelope
     try:
         envelope = response.json()
     except Exception:
-        raise OllamaError(f"Ollama returned non-JSON response envelope: {response.text[:500]} (duration: {duration:.2f}s)")
+        raise OllamaError(
+            f"Ollama returned non-JSON response envelope: {response.text[:500]} (duration: {duration:.2f}s)"
+        )
 
     raw_text = envelope.get("response", "")
     done_reason = envelope.get("done_reason")
@@ -141,7 +182,9 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
     )
 
     if not raw_text.strip():
-        raise OllamaError(f"Ollama returned an empty response body. done_reason: {done_reason}, duration: {duration:.2f}s")
+        raise OllamaError(
+            f"Ollama returned an empty response body. done_reason: {done_reason}, duration: {duration:.2f}s"
+        )
 
     # If done_reason is limit, the response was truncated
     if done_reason == "limit":
@@ -158,22 +201,34 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
         parse_err_cat = type(e).__name__
         # Determine if it looks truncated even if done_reason wasn't "limit"
         looks_truncated = not raw_text.strip().endswith("}")
-        truncation_flag = " (looks truncated - no closing brace)" if looks_truncated else ""
+        truncation_flag = (
+            " (looks truncated - no closing brace)" if looks_truncated else ""
+        )
         raise OllamaError(
             f"Ollama output is not valid JSON. Error: {e} ({parse_err_cat}){truncation_flag}. "
             f"raw_len: {raw_len}, done_reason: {done_reason}, duration: {duration:.2f}s. "
             f"Raw snippet: {raw_text[:200]} ... {raw_text[-200:] if raw_len > 400 else ''}"
         )
+    # Repair common model mistakes before strict validation
+    if not isinstance(plan_dict, dict):
+        raise OllamaError(
+            f"Ollama JSON root must be an object, got {type(plan_dict).__name__}. "
+            f"raw_len: {raw_len}, done_reason: {done_reason}, duration: {duration:.2f}s."
+        )
+
+    plan_dict = _repair_plan_dict(plan_dict)
 
     # Validate against the strict Pydantic schema
     try:
         plan = AIGeneratedPlan.model_validate(plan_dict)
     except ValidationError as e:
         validation_errors = e.errors()
-        err_details = "; ".join([
-            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']} ({err['type']})"
-            for err in validation_errors
-        ])
+        err_details = "; ".join(
+            [
+                f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']} ({err['type']})"
+                for err in validation_errors
+            ]
+        )
         raise OllamaError(
             f"Ollama JSON does not match schema. Errors: {err_details}. "
             f"raw_len: {raw_len}, done_reason: {done_reason}, duration: {duration:.2f}s. "
