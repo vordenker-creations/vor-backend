@@ -161,3 +161,19 @@ def build_fallback_ai_plan() -> AIGeneratedPlan:
             task_load=0,
         ),
     )
+
+
+class StudentContextResponse(BaseModel):
+    id: UUID
+    student_id: UUID
+    raw_input: dict[str, Any]
+    ai_status: AIStatus
+    ai_plan: Optional[dict[str, Any]] = None
+    ai_last_error: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
+class SyncContextPullResponse(BaseModel):
+    student: MeResponse
+    context: StudentContextResponse
+
