@@ -21,7 +21,7 @@ from core.schemas import AIGeneratedPlan
 logger = logging.getLogger("ai_engine")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://100.80.253.23:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "maternion/lfm2.5")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "4096"))
 GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
@@ -34,6 +34,16 @@ def _build_prompt(raw_input: dict[str, Any]) -> str:
     return f"""/no_think
 You are a JSON generator for an academic planning app.
 Return ONLY one valid JSON object. No markdown. No comments. No explanation.
+Do not include reasoning tags such as <think>, <reasoning>, or any text outside JSON.
+
+Voice and audience requirements:
+- Write user-facing prose directly to the student in second-person POV.
+- Use "you" and "your" for student_summary and academic_roadmap.ai_insight.
+- Do not describe the student in third person.
+- Do not use "he", "she", "they", "the student", or "[name] is" in user-facing prose.
+- If using the student name, use it only as direct address.
+- Bad: "Vor is an AI major. He possesses strong technical skills."
+- Good: "You are an AI major with strong technical skills in Python, FastAPI, and PostgreSQL."
 
 CONTEXT:
 {raw_input_json}
@@ -41,9 +51,11 @@ CONTEXT:
 Hard requirements:
 - Top-level keys exactly: student_summary, skill_analysis, weekly_study_plan, academic_roadmap, metrics.
 - Do not return an empty object.
+- student_summary must be 1-2 sentences in second-person POV, written like a personal academic mentor speaking to the student.
 - skill_analysis must be an object with arrays: strengths, weaknesses, recommended_focus.
 - weekly_study_plan must be an array of day objects. Each day object has day and tasks. tasks is an array.
 - academic_roadmap must be an array of objects with title, status, progress_pct, ai_insight.
+- academic_roadmap.ai_insight must use second-person POV and give direct guidance to the student.
 - metrics must contain integer values: academic_progress, career_readiness, task_load.
 - Allowed task type values: study, practice, review, project.
 - Allowed priority values: high, medium, low.
@@ -143,39 +155,41 @@ def _extract_json_object(raw_text: str) -> str:
     # JSON boundary extraction (finding first "{" and last "}") acts as the primary recovery mechanism.
     text = re.sub(r"(?is)<think>.*?</think>", "", raw_text)
     text = re.sub(r"(?is)<reasoning>.*?</reasoning>", "", text)
-    
+
     # 2. Extract boundaries using safest rule: find first "{" and last "}"
     start_idx = text.find("{")
     end_idx = text.rfind("}")
-    
+
     if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
         raise OllamaError(
             f"No valid JSON object boundaries found in raw text. (length: {len(raw_text)})"
         )
-        
-    return text[start_idx:end_idx + 1]
+
+    return text[start_idx : end_idx + 1]
 
 
-def _normalize_choice(value: Any, allowed: list[str], default: str, aliases: dict[str, str] = None) -> str:
+def _normalize_choice(
+    value: Any, allowed: list[str], default: str, aliases: dict[str, str] | None = None
+) -> str:
     if not isinstance(value, str):
         if value is None:
             return default
         val = str(value).strip().lower()
     else:
         val = value.strip().lower()
-        
+
     val = val.replace(" ", "_").replace("-", "_")
-    
+
     if aliases and val in aliases:
         val = aliases[val]
-        
+
     if val in allowed:
         return val
-        
+
     # Conservative suffix check: e.g. medium_priority -> medium
     if val.endswith("_priority") and val[:-9] in allowed:
         return val[:-9]
-        
+
     return default
 
 
@@ -188,22 +202,25 @@ def _clamp_int(value: Any, min_value: int, max_value: int, default: int) -> int:
     return max(min_value, min(max_value, value))
 
 
-def _repair_plan_dict(plan_dict: dict[str, Any], json_extracted: bool) -> dict[str, Any]:
-    if not isinstance(plan_dict, dict):
-        return {}
-
+def _repair_plan_dict(
+    plan_dict: dict[str, Any], json_extracted: bool
+) -> dict[str, Any]:
     dropped_weekly_plan_items = 0
     dropped_weekly_tasks = 0
     dropped_roadmap_items = 0
     defaults_inserted = []
 
     # 1. Top-level defaults
-    if "student_summary" not in plan_dict or not isinstance(plan_dict["student_summary"], str):
+    if "student_summary" not in plan_dict or not isinstance(
+        plan_dict["student_summary"], str
+    ):
         plan_dict["student_summary"] = ""
         defaults_inserted.append("student_summary")
 
     # skill_analysis
-    if "skill_analysis" not in plan_dict or not isinstance(plan_dict["skill_analysis"], dict):
+    if "skill_analysis" not in plan_dict or not isinstance(
+        plan_dict["skill_analysis"], dict
+    ):
         plan_dict["skill_analysis"] = {}
         defaults_inserted.append("skill_analysis")
 
@@ -214,12 +231,16 @@ def _repair_plan_dict(plan_dict: dict[str, Any], json_extracted: bool) -> dict[s
             defaults_inserted.append(f"skill_analysis.{field}")
 
     # weekly_study_plan
-    if "weekly_study_plan" not in plan_dict or not isinstance(plan_dict["weekly_study_plan"], list):
+    if "weekly_study_plan" not in plan_dict or not isinstance(
+        plan_dict["weekly_study_plan"], list
+    ):
         plan_dict["weekly_study_plan"] = []
         defaults_inserted.append("weekly_study_plan")
 
     # academic_roadmap
-    if "academic_roadmap" not in plan_dict or not isinstance(plan_dict["academic_roadmap"], list):
+    if "academic_roadmap" not in plan_dict or not isinstance(
+        plan_dict["academic_roadmap"], list
+    ):
         plan_dict["academic_roadmap"] = []
         defaults_inserted.append("academic_roadmap")
 
@@ -231,85 +252,83 @@ def _repair_plan_dict(plan_dict: dict[str, Any], json_extracted: bool) -> dict[s
     # 2. Repair weekly study plan
     weekly_plan = plan_dict["weekly_study_plan"]
     repaired_weekly_plan = []
-    
+
     for day_item in weekly_plan:
         if not isinstance(day_item, dict):
             dropped_weekly_plan_items += 1
             continue
-            
+
         if "day" not in day_item or not isinstance(day_item["day"], str):
             day_item["day"] = "Unscheduled"
             defaults_inserted.append("weekly_study_plan.day")
-            
+
         if "tasks" not in day_item or not isinstance(day_item["tasks"], list):
             day_item["tasks"] = []
             defaults_inserted.append("weekly_study_plan.tasks")
-            
+
         repaired_tasks = []
         for task_item in day_item["tasks"]:
             if not isinstance(task_item, dict):
                 dropped_weekly_tasks += 1
                 continue
-                
+
             if "title" not in task_item or not isinstance(task_item["title"], str):
                 task_item["title"] = "Study session"
                 defaults_inserted.append("weekly_study_plan.tasks.title")
-                
+
             task_item["type"] = _normalize_choice(
                 task_item.get("type"),
                 ["study", "practice", "review", "project"],
                 "study",
-                TASK_TYPE_ALIASES
+                TASK_TYPE_ALIASES,
             )
-            
+
             task_item["duration_min"] = _clamp_int(
                 task_item.get("duration_min"), 1, 480, 60
             )
-            
+
             task_item["priority"] = _normalize_choice(
                 task_item.get("priority"),
                 ["high", "medium", "low"],
                 "medium",
-                TASK_PRIORITY_ALIASES
+                TASK_PRIORITY_ALIASES,
             )
-            
+
             repaired_tasks.append(task_item)
-            
+
         day_item["tasks"] = repaired_tasks
         repaired_weekly_plan.append(day_item)
-        
+
     plan_dict["weekly_study_plan"] = repaired_weekly_plan
 
     # 3. Repair academic roadmap
     roadmap = plan_dict["academic_roadmap"]
     repaired_roadmap = []
-    
+
     for item in roadmap:
         if not isinstance(item, dict):
             dropped_roadmap_items += 1
             continue
-            
+
         if "title" not in item or not isinstance(item["title"], str):
             item["title"] = "Academic milestone"
             defaults_inserted.append("academic_roadmap.title")
-            
+
         item["status"] = _normalize_choice(
             item.get("status"),
             ["completed", "in_progress", "not_started"],
             "not_started",
-            ROADMAP_STATUS_ALIASES
+            ROADMAP_STATUS_ALIASES,
         )
-        
-        item["progress_pct"] = _clamp_int(
-            item.get("progress_pct"), 0, 100, 0
-        )
-        
+
+        item["progress_pct"] = _clamp_int(item.get("progress_pct"), 0, 100, 0)
+
         if "ai_insight" not in item or not isinstance(item["ai_insight"], str):
             item["ai_insight"] = ""
             defaults_inserted.append("academic_roadmap.ai_insight")
-            
+
         repaired_roadmap.append(item)
-        
+
     plan_dict["academic_roadmap"] = repaired_roadmap
 
     # 4. Repair metrics
@@ -317,17 +336,17 @@ def _repair_plan_dict(plan_dict: dict[str, Any], json_extracted: bool) -> dict[s
     metrics["academic_progress"] = _clamp_int(
         metrics.get("academic_progress"), 0, 100, 0
     )
-    metrics["career_readiness"] = _clamp_int(
-        metrics.get("career_readiness"), 0, 100, 0
-    )
-    metrics["task_load"] = _clamp_int(
-        metrics.get("task_load"), 0, 100, 50
-    )
+    metrics["career_readiness"] = _clamp_int(metrics.get("career_readiness"), 0, 100, 0)
+    metrics["task_load"] = _clamp_int(metrics.get("task_load"), 0, 100, 50)
 
     # 5. Log concise summary of repair actions
-    if (json_extracted or dropped_weekly_plan_items > 0 or 
-            dropped_weekly_tasks > 0 or dropped_roadmap_items > 0 or 
-            defaults_inserted):
+    if (
+        json_extracted
+        or dropped_weekly_plan_items > 0
+        or dropped_weekly_tasks > 0
+        or dropped_roadmap_items > 0
+        or defaults_inserted
+    ):
         logger.info(
             f"Ollama plan repaired - "
             f"json_extracted: {json_extracted}, "
@@ -351,8 +370,9 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0,
+            "temperature": 0.3,
             "top_p": 0.8,
+            "top_k": 50,
             "repeat_penalty": 1.08,
             "num_predict": OLLAMA_NUM_PREDICT,
         },
@@ -415,7 +435,7 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
     # Extract the JSON object boundaries from response
     try:
         json_text = _extract_json_object(raw_text)
-        json_extracted = (json_text.strip() != raw_text.strip())
+        json_extracted = json_text.strip() != raw_text.strip()
     except OllamaError as e:
         raise OllamaError(
             f"Ollama output does not contain a JSON object. "
@@ -467,5 +487,3 @@ async def generate_academic_plan(raw_input: dict[str, Any]) -> AIGeneratedPlan:
         )
 
     return plan
-
-

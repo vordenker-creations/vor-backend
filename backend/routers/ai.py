@@ -6,7 +6,12 @@ from typing import Annotated
 
 from core.database import SessionLocal, get_db
 from core.auth_deps import get_current_student
-from core.schemas import AIGeneratedPlan, GeneratePlanResponse, build_fallback_ai_plan
+from core.schemas import (
+    AIGeneratedPlan,
+    GeneratePlanResponse,
+    build_fallback_ai_plan,
+    AIStatus,
+)
 from models import models
 from services.ai_engine import OllamaError, generate_academic_plan
 
@@ -22,12 +27,24 @@ def _safe_plan_from_db(value: object) -> AIGeneratedPlan | None:
         return build_fallback_ai_plan()
 
 
+def _normalize_ai_status(value: object) -> AIStatus:
+    if value == "EMPTY":
+        return "EMPTY"
+    if value == "PENDING":
+        return "PENDING"
+    if value == "COMPLETED":
+        return "COMPLETED"
+    if value == "FAILED":
+        return "FAILED"
+    return "FAILED"
+
+
 def _response_from_context(
     student_id,
     context: models.StudentContext,
     message: str,
 ) -> GeneratePlanResponse:
-    status = context.ai_status if context.ai_status in {"EMPTY", "PENDING", "COMPLETED", "FAILED"} else "FAILED"
+    status = _normalize_ai_status(context.ai_status)
     return GeneratePlanResponse(
         status=status,
         student_id=student_id,
@@ -42,7 +59,9 @@ def _commit_or_500(db: Session, action: str) -> None:
         db.commit()
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database update failed while {action}: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Database update failed while {action}: {str(e)}"
+        )
 
 
 async def _run_generation_job(student_id) -> None:
