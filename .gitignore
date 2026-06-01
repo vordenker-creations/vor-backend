@@ -19,3 +19,4 @@ lazygit.tar.gz
 # Backups
 quarantine_students.py.bak
 docker-compose.yaml.bak
+geminiignore.md
