@@ -212,5 +212,6 @@ Perform a complete login, sync, and status-check flow to ensure API components i
 
 ## 12. Related Documentation
 
-- backend_defense_v2_professor_safe.md: Full architectural context, design tradeoffs, security decisions, and academic defenses.
+- backend_documentation_v2.md: Full architectural context, design tradeoffs, security decisions, and academic defenses.
+you can read the doc here: https://drive.google.com/file/d/1BNNQLJ7eXhlQAdz26SgVUoTeh_pU6S5Y/view?usp=sharing
 - Project reports and visual mockup assets are stored within the main repository directory.
